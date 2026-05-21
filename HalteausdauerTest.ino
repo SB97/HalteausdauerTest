@@ -7,8 +7,9 @@
 // Anpassbare Parameter
 // ================================================================
 
-const float START_THRESHOLD_CM = 1.0f;
-const float STOP_THRESHOLD_CM = 1.0f;
+// Strecken jetzt immer in mm
+const float START_THRESHOLD_MM = 10.0f;
+const float STOP_THRESHOLD_MM = 10.0f;
 const uint32_t STOP_HOLD_MS = 400;
 
 const uint8_t CALIBRATION_SAMPLES = 20;
@@ -25,15 +26,24 @@ const uint32_t CONFIRM_BEEP_GAP_MS = 100;
 const uint16_t RUN_BEEP_FREQ_HZ = 2200;
 const uint16_t CONFIRM_BEEP_FREQ_HZ = 3000;
 
+// Interner Buzzer beim M5StickC PLUS normalerweise GPIO 2
+const bool BUZZER_ENABLED = true;
+const int BUZZER_PIN = 2;
+
 const uint8_t SMOOTHING_WINDOW = 5;
+
+// Display-Rand
+const int16_t DISPLAY_MARGIN_X = 8;
+const int16_t DISPLAY_MARGIN_Y = 6;
+const int16_t DISPLAY_LINE_SPACING = 2;
 
 // Typischer I2C-Anschluss des M5StickC PLUS HAT-Ports
 const int I2C_SDA_PIN = 0;
 const int I2C_SCL_PIN = 26;
 
-// VL53L0X gültiger Bereich, für deine Geometrie ggf. anpassen
-const uint16_t MIN_VALID_MM = 20;
-const uint16_t MAX_VALID_MM = 2000;
+// Gültiger ToF-Messbereich in mm
+const uint16_t MIN_VALID_DISTANCE_MM = 20;
+const uint16_t MAX_VALID_DISTANCE_MM = 2000;
 
 // ================================================================
 // Zustandsmaschine
@@ -60,11 +70,11 @@ uint32_t lastSensorUpdateMs = 0;
 uint32_t lastDisplayUpdateMs = 0;
 
 bool hasDistance = false;
-float currentDistanceCm = 0.0f;
+float currentDistanceMm = 0.0f;
 
 bool hasZero = false;
-float zeroDistanceCm = 0.0f;
-float currentHeightCm = 0.0f;
+float zeroDistanceMm = 0.0f;
+float currentHeightMm = 0.0f;
 
 // ================================================================
 // Glättung: Median aus den letzten 5 gültigen Werten
@@ -117,7 +127,7 @@ float medianFilter(float value) {
 // ================================================================
 
 uint8_t calibrationCount = 0;
-float calibrationSumCm = 0.0f;
+float calibrationSumMm = 0.0f;
 
 // ================================================================
 // Messdaten
@@ -128,16 +138,16 @@ uint32_t endTimeMs = 0;
 uint32_t lastAucUpdateMs = 0;
 uint32_t stopZoneSinceMs = 0;
 
-float maxHeightCm = 0.0f;
-float aucCmSec = 0.0f;
+float maxHeightMm = 0.0f;
+float aucMmSec = 0.0f;
 
 float finalDurationSec = 0.0f;
-float finalMaxHeightCm = 0.0f;
-float finalAucCmSec = 0.0f;
-float finalAverageHeightCm = 0.0f;
+float finalMaxHeightMm = 0.0f;
+float finalAucMmSec = 0.0f;
+float finalAverageHeightMm = 0.0f;
 
 // ================================================================
-// Nicht-blockierender Buzzer
+// Nicht-blockierender Buzzer über tone() / noTone()
 // ================================================================
 
 bool beepOn = false;
@@ -150,12 +160,20 @@ uint32_t confirmNextStartMs = 0;
 uint32_t lastRunBeepMs = 0;
 
 void stopBeepNow() {
-  M5.Beep.mute();
+  if (BUZZER_ENABLED) {
+    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
   beepOn = false;
 }
 
 void startSingleBeep(uint16_t freqHz, uint32_t durationMs) {
-  M5.Beep.tone(freqHz);
+  if (!BUZZER_ENABLED) {
+    return;
+  }
+
+  tone(BUZZER_PIN, freqHz);
   beepOn = true;
   beepOffAtMs = millis() + durationMs;
 }
@@ -178,6 +196,7 @@ void updateBeeper() {
       if (confirmBeepsLeft > 0) {
         confirmBeepsLeft--;
       }
+
       confirmNextStartMs = now + CONFIRM_BEEP_GAP_MS;
     }
   }
@@ -210,13 +229,13 @@ void resetMeasurementData() {
   lastAucUpdateMs = 0;
   stopZoneSinceMs = 0;
 
-  maxHeightCm = 0.0f;
-  aucCmSec = 0.0f;
+  maxHeightMm = 0.0f;
+  aucMmSec = 0.0f;
 
   finalDurationSec = 0.0f;
-  finalMaxHeightCm = 0.0f;
-  finalAucCmSec = 0.0f;
-  finalAverageHeightCm = 0.0f;
+  finalMaxHeightMm = 0.0f;
+  finalAucMmSec = 0.0f;
+  finalAverageHeightMm = 0.0f;
 }
 
 void startCalibration() {
@@ -228,7 +247,7 @@ void startCalibration() {
 
   hasZero = false;
   calibrationCount = 0;
-  calibrationSumCm = 0.0f;
+  calibrationSumMm = 0.0f;
 
   state = CALIBRATING;
 }
@@ -238,11 +257,11 @@ void startMeasurement(uint32_t now) {
   lastAucUpdateMs = now;
   stopZoneSinceMs = 0;
 
-  aucCmSec = 0.0f;
-  maxHeightCm = currentHeightCm;
+  aucMmSec = 0.0f;
+  maxHeightMm = currentHeightMm;
 
-  if (maxHeightCm < 0.0f) {
-    maxHeightCm = 0.0f;
+  if (maxHeightMm < 0.0f) {
+    maxHeightMm = 0.0f;
   }
 
   lastRunBeepMs = now - BEEP_INTERVAL_MS;
@@ -253,13 +272,13 @@ void finishMeasurement(uint32_t now) {
   endTimeMs = now;
 
   finalDurationSec = (endTimeMs - startTimeMs) / 1000.0f;
-  finalMaxHeightCm = maxHeightCm;
-  finalAucCmSec = aucCmSec;
+  finalMaxHeightMm = maxHeightMm;
+  finalAucMmSec = aucMmSec;
 
   if (finalDurationSec > 0.0f) {
-    finalAverageHeightCm = finalAucCmSec / finalDurationSec;
+    finalAverageHeightMm = finalAucMmSec / finalDurationSec;
   } else {
-    finalAverageHeightCm = 0.0f;
+    finalAverageHeightMm = 0.0f;
   }
 
   stopBeepNow();
@@ -268,7 +287,7 @@ void finishMeasurement(uint32_t now) {
   state = FINISHED;
 }
 
-bool readTofDistanceCm(float &distanceCm) {
+bool readTofDistanceMm(float &distanceMmOut) {
   if (!tofOk) {
     return false;
   }
@@ -279,35 +298,36 @@ bool readTofDistanceCm(float &distanceCm) {
     return false;
   }
 
-  if (distanceMm < MIN_VALID_MM || distanceMm > MAX_VALID_MM) {
+  if (distanceMm < MIN_VALID_DISTANCE_MM ||
+      distanceMm > MAX_VALID_DISTANCE_MM) {
     return false;
   }
 
-  distanceCm = distanceMm / 10.0f;
+  distanceMmOut = (float)distanceMm;
   return true;
 }
 
-void processNewDistance(float rawDistanceCm, uint32_t now) {
-  currentDistanceCm = medianFilter(rawDistanceCm);
+void processNewDistance(float rawDistanceMm, uint32_t now) {
+  currentDistanceMm = medianFilter(rawDistanceMm);
   hasDistance = true;
 
   if (hasZero) {
-    currentHeightCm = currentDistanceCm - zeroDistanceCm;
+    currentHeightMm = currentDistanceMm - zeroDistanceMm;
   } else {
-    currentHeightCm = 0.0f;
+    currentHeightMm = 0.0f;
   }
 
   if (state == CALIBRATING) {
-    calibrationSumCm += currentDistanceCm;
+    calibrationSumMm += currentDistanceMm;
     calibrationCount++;
 
     if (calibrationCount >= CALIBRATION_SAMPLES) {
-      zeroDistanceCm = calibrationSumCm / calibrationCount;
+      zeroDistanceMm = calibrationSumMm / calibrationCount;
       hasZero = true;
 
       resetMeasurementData();
 
-      currentHeightCm = currentDistanceCm - zeroDistanceCm;
+      currentHeightMm = currentDistanceMm - zeroDistanceMm;
       state = WAIT_FOR_LIFT;
 
       startConfirmBeeps();
@@ -321,7 +341,7 @@ void processNewDistance(float rawDistanceCm, uint32_t now) {
   }
 
   if (state == WAIT_FOR_LIFT) {
-    if (currentHeightCm >= START_THRESHOLD_CM) {
+    if (currentHeightMm >= START_THRESHOLD_MM) {
       startMeasurement(now);
     }
 
@@ -333,19 +353,19 @@ void processNewDistance(float rawDistanceCm, uint32_t now) {
     lastAucUpdateMs = now;
 
     float dtSec = dtMs / 1000.0f;
-    float positiveHeightCm = currentHeightCm;
+    float positiveHeightMm = currentHeightMm;
 
-    if (positiveHeightCm < 0.0f) {
-      positiveHeightCm = 0.0f;
+    if (positiveHeightMm < 0.0f) {
+      positiveHeightMm = 0.0f;
     }
 
-    aucCmSec += positiveHeightCm * dtSec;
+    aucMmSec += positiveHeightMm * dtSec;
 
-    if (currentHeightCm > maxHeightCm) {
-      maxHeightCm = currentHeightCm;
+    if (currentHeightMm > maxHeightMm) {
+      maxHeightMm = currentHeightMm;
     }
 
-    if (currentHeightCm <= STOP_THRESHOLD_CM) {
+    if (currentHeightMm <= STOP_THRESHOLD_MM) {
       if (stopZoneSinceMs == 0) {
         stopZoneSinceMs = now;
       } else if ((now - stopZoneSinceMs) >= STOP_HOLD_MS) {
@@ -360,118 +380,121 @@ void processNewDistance(float rawDistanceCm, uint32_t now) {
 }
 
 // ================================================================
-// Display
+// Display mit Rand
 // ================================================================
 
-void printLine(const char *label, float value, const char *unit) {
-  M5.Lcd.print(label);
-  M5.Lcd.print(": ");
+int16_t displayY = DISPLAY_MARGIN_Y;
+
+void beginScreen() {
+  M5.Lcd.fillScreen(BLACK);
+  displayY = DISPLAY_MARGIN_Y;
+}
+
+void drawLine(const String &text, uint16_t color = WHITE, uint8_t size = 2) {
+  M5.Lcd.setTextColor(color, BLACK);
+  M5.Lcd.setTextSize(size);
+  M5.Lcd.setCursor(DISPLAY_MARGIN_X, displayY);
+  M5.Lcd.print(text);
+
+  displayY += (8 * size) + DISPLAY_LINE_SPACING;
+}
+
+void drawSpacer(uint8_t pixels = 6) {
+  displayY += pixels;
+}
+
+String valueLine(const char *label, float value, const char *unit,
+                 uint8_t decimals) {
+  String line = String(label) + ": ";
 
   if (isnan(value)) {
-    M5.Lcd.println("--");
+    line += "--";
   } else {
-    M5.Lcd.print(value, 1);
-    M5.Lcd.print(" ");
-    M5.Lcd.println(unit);
+    line += String(value, decimals);
+    line += " ";
+    line += unit;
   }
+
+  return line;
 }
 
 void drawIdleLikeScreen(const char *title) {
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.setTextColor(WHITE, BLACK);
-  M5.Lcd.setTextSize(2);
+  beginScreen();
 
-  M5.Lcd.println(title);
-  M5.Lcd.println();
+  drawLine(title, WHITE, 2);
+  drawSpacer(4);
 
   if (hasDistance) {
-    printLine("Dist", currentDistanceCm, "cm");
+    drawLine(valueLine("Distanz", currentDistanceMm, "mm", 0));
   } else {
-    printLine("Dist", NAN, "cm");
+    drawLine(valueLine("Distanz", NAN, "mm", 0));
   }
 
   if (hasZero) {
-    printLine("Null", zeroDistanceCm, "cm");
-    printLine("Hoehe", currentHeightCm, "cm");
+    drawLine(valueLine("Null", zeroDistanceMm, "mm", 0));
+    drawLine(valueLine("Hoehe", currentHeightMm, "mm", 1));
   } else {
-    printLine("Null", NAN, "cm");
-    printLine("Hoehe", NAN, "cm");
+    drawLine(valueLine("Null", NAN, "mm", 0));
+    drawLine(valueLine("Hoehe", NAN, "mm", 1));
   }
 
-  M5.Lcd.println();
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.println("Btn A = Nullung / neue Messung");
+  drawSpacer(4);
+  drawLine("Btn A = Nullung / neue Messung", WHITE, 1);
 
   if (!tofOk) {
-    M5.Lcd.setTextColor(RED, BLACK);
-    M5.Lcd.println("ToF Sensor nicht gefunden!");
+    drawLine("ToF Sensor nicht gefunden!", RED, 1);
   }
 }
 
 void drawCalibrationScreen() {
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.setTextColor(YELLOW, BLACK);
-  M5.Lcd.setTextSize(2);
+  beginScreen();
 
-  M5.Lcd.println("NULLUNG");
-  M5.Lcd.println();
+  drawLine("NULLUNG", YELLOW, 2);
+  drawSpacer(4);
 
-  M5.Lcd.setTextColor(WHITE, BLACK);
-  M5.Lcd.print("Samples: ");
-  M5.Lcd.print(calibrationCount);
-  M5.Lcd.print("/");
-  M5.Lcd.println(CALIBRATION_SAMPLES);
+  drawLine(
+      "Samples: " + String(calibrationCount) + "/" +
+          String(CALIBRATION_SAMPLES),
+      WHITE, 2);
 
   if (hasDistance) {
-    printLine("Dist", currentDistanceCm, "cm");
+    drawLine(valueLine("Distanz", currentDistanceMm, "mm", 0));
   } else {
-    printLine("Dist", NAN, "cm");
+    drawLine(valueLine("Distanz", NAN, "mm", 0));
   }
 
-  M5.Lcd.println();
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.println("Gewicht ruhig in Startposition halten");
+  drawSpacer(4);
+  drawLine("Gewicht ruhig halten", WHITE, 1);
 }
 
 void drawRunningScreen() {
   uint32_t now = millis();
   float durationSec = (now - startTimeMs) / 1000.0f;
 
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.setTextColor(GREEN, BLACK);
-  M5.Lcd.setTextSize(2);
+  beginScreen();
 
-  M5.Lcd.println("RUNNING");
-  M5.Lcd.println();
+  drawLine("RUNNING", GREEN, 2);
+  drawSpacer(4);
 
-  M5.Lcd.setTextColor(WHITE, BLACK);
-  printLine("Hoehe", currentHeightCm, "cm");
-  printLine("Max", maxHeightCm, "cm");
-  printLine("Zeit", durationSec, "s");
-  printLine("AUC", aucCmSec, "cm*s");
+  drawLine(valueLine("Hoehe", currentHeightMm, "mm", 1));
+  drawLine(valueLine("Max", maxHeightMm, "mm", 1));
+  drawLine(valueLine("Zeit", durationSec, "s", 1));
+  drawLine(valueLine("AUC", aucMmSec, "mm*s", 1));
 }
 
 void drawFinishedScreen() {
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.setTextColor(CYAN, BLACK);
-  M5.Lcd.setTextSize(2);
+  beginScreen();
 
-  M5.Lcd.println("DONE");
-  M5.Lcd.println();
+  drawLine("DONE", CYAN, 2);
+  drawSpacer(4);
 
-  M5.Lcd.setTextColor(WHITE, BLACK);
-  printLine("Dauer", finalDurationSec, "s");
-  printLine("Max", finalMaxHeightCm, "cm");
-  printLine("AUC", finalAucCmSec, "cm*s");
-  printLine("Mittel", finalAverageHeightCm, "cm");
+  drawLine(valueLine("Dauer", finalDurationSec, "s", 1));
+  drawLine(valueLine("Max", finalMaxHeightMm, "mm", 1));
+  drawLine(valueLine("AUC", finalAucMmSec, "mm*s", 1));
+  drawLine(valueLine("Mittel", finalAverageHeightMm, "mm", 1));
 
-  M5.Lcd.println();
-  M5.Lcd.setTextSize(1);
-  M5.Lcd.println("Btn A = neue Nullung / Messung");
+  drawSpacer(4);
+  drawLine("Btn A = neue Nullung / Messung", WHITE, 1);
 }
 
 void updateDisplay() {
@@ -509,7 +532,9 @@ void setup() {
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setTextSize(2);
 
-  M5.Beep.setVolume(8);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  noTone(BUZZER_PIN);
 
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
 
@@ -523,11 +548,16 @@ void setup() {
 
   resetMeasurementData();
 
-  M5.Lcd.setCursor(0, 0);
-  M5.Lcd.println("ToF Hold Test");
-  M5.Lcd.println();
-  M5.Lcd.println("Btn A:");
-  M5.Lcd.println("Nullung");
+  beginScreen();
+  drawLine("ToF Hold Test", WHITE, 2);
+  drawSpacer(4);
+  drawLine("Btn A:", WHITE, 2);
+  drawLine("Nullung", WHITE, 2);
+
+  if (!tofOk) {
+    drawSpacer(4);
+    drawLine("ToF Sensor nicht gefunden!", RED, 1);
+  }
 }
 
 void loop() {
@@ -542,10 +572,10 @@ void loop() {
   if ((now - lastSensorUpdateMs) >= SENSOR_UPDATE_MS) {
     lastSensorUpdateMs = now;
 
-    float rawDistanceCm = 0.0f;
+    float rawDistanceMm = 0.0f;
 
-    if (readTofDistanceCm(rawDistanceCm)) {
-      processNewDistance(rawDistanceCm, now);
+    if (readTofDistanceMm(rawDistanceMm)) {
+      processNewDistance(rawDistanceMm, now);
     }
   }
 
