@@ -404,7 +404,7 @@ void drawSpacer(uint8_t pixels = 6) {
 }
 
 String valueLine(const char *label, float value, const char *unit,
-                 uint8_t decimals) {
+                 unsigned int decimals) {
   String line = String(label) + ": ";
 
   if (isnan(value)) {
