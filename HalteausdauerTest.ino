@@ -1,6 +1,6 @@
 #include <M5StickCPlus.h>
-#include <Wire.h>
 #include <VL53L0X.h>
+#include <Wire.h>
 #include <math.h>
 
 // ================================================================
@@ -25,6 +25,15 @@ const uint32_t CONFIRM_BEEP_GAP_MS = 100;
 
 const uint16_t RUN_BEEP_FREQ_HZ = 2200;
 const uint16_t CONFIRM_BEEP_FREQ_HZ = 3000;
+
+const uint32_t AUTO_SHUTOFF_MS = 120000;
+
+// Spannungsbasierte Akku-%-Schätzung
+const float BATTERY_EMPTY_V = 3.20f;
+const float BATTERY_LOW_V = 3.50f;
+const float BATTERY_MID_V = 3.80f;
+const float BATTERY_HIGH_V = 4.00f;
+const float BATTERY_FULL_V = 4.20f;
 
 // Interner Buzzer beim M5StickC PLUS normalerweise GPIO 2
 const bool BUZZER_ENABLED = true;
@@ -144,7 +153,14 @@ float aucMmSec = 0.0f;
 float finalDurationSec = 0.0f;
 float finalMaxHeightMm = 0.0f;
 float finalAucMmSec = 0.0f;
-float finalAverageHeightMm = 0.0f;
+
+// ================================================================
+// Systemstatus
+// ================================================================
+
+uint32_t autoShutdownBaseMs = 0;
+bool hasBatteryInfo = false;
+uint8_t batteryPercent = 0;
 
 // ================================================================
 // Nicht-blockierender Buzzer über tone() / noTone()
@@ -223,6 +239,100 @@ void updateBeeper() {
 // Hilfsfunktionen
 // ================================================================
 
+void resetAutoShutdownTimer(uint32_t now) {
+  autoShutdownBaseMs = now;
+}
+
+bool isAutoShutdownArmed() {
+  return state == IDLE || state == WAIT_FOR_LIFT || state == FINISHED;
+}
+
+uint32_t getAutoShutdownRemainingMs(uint32_t now) {
+  if (!isAutoShutdownArmed()) {
+    return AUTO_SHUTOFF_MS;
+  }
+
+  uint32_t elapsed = now - autoShutdownBaseMs;
+
+  if (elapsed >= AUTO_SHUTOFF_MS) {
+    return 0;
+  }
+
+  return AUTO_SHUTOFF_MS - elapsed;
+}
+
+uint8_t batteryPercentFromVoltage(float voltageV) {
+  float percent = 0.0f;
+
+  if (voltageV >= BATTERY_FULL_V) {
+    percent = 100.0f;
+  } else if (voltageV >= BATTERY_HIGH_V) {
+    percent = 80.0f +
+              ((voltageV - BATTERY_HIGH_V) /
+               (BATTERY_FULL_V - BATTERY_HIGH_V)) *
+                  20.0f;
+  } else if (voltageV >= BATTERY_MID_V) {
+    percent = 40.0f +
+              ((voltageV - BATTERY_MID_V) /
+               (BATTERY_HIGH_V - BATTERY_MID_V)) *
+                  40.0f;
+  } else if (voltageV >= BATTERY_LOW_V) {
+    percent = 10.0f +
+              ((voltageV - BATTERY_LOW_V) /
+               (BATTERY_MID_V - BATTERY_LOW_V)) *
+                  30.0f;
+  } else if (voltageV >= BATTERY_EMPTY_V) {
+    percent = ((voltageV - BATTERY_EMPTY_V) /
+               (BATTERY_LOW_V - BATTERY_EMPTY_V)) *
+              10.0f;
+  } else {
+    percent = 0.0f;
+  }
+
+  if (percent < 0.0f) {
+    percent = 0.0f;
+  }
+
+  if (percent > 100.0f) {
+    percent = 100.0f;
+  }
+
+  return (uint8_t)(percent + 0.5f);
+}
+
+void updateBatteryStatus() {
+  float voltageV = M5.Axp.GetBatVoltage();
+
+  if (voltageV > 3.0f && voltageV < 5.0f) {
+    hasBatteryInfo = true;
+    batteryPercent = batteryPercentFromVoltage(voltageV);
+  } else {
+    hasBatteryInfo = false;
+    batteryPercent = 0;
+  }
+}
+
+void updateAutoShutdown(uint32_t now) {
+  if (!isAutoShutdownArmed()) {
+    return;
+  }
+
+  if ((now - autoShutdownBaseMs) < AUTO_SHUTOFF_MS) {
+    return;
+  }
+
+  stopBeepNow();
+
+  M5.Lcd.fillScreen(BLACK);
+  M5.Lcd.setTextColor(YELLOW, BLACK);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setCursor(DISPLAY_MARGIN_X, DISPLAY_MARGIN_Y);
+  M5.Lcd.print("AUTO OFF");
+
+  delay(150);
+  M5.Axp.PowerOff();
+}
+
 void resetMeasurementData() {
   startTimeMs = 0;
   endTimeMs = 0;
@@ -235,7 +345,6 @@ void resetMeasurementData() {
   finalDurationSec = 0.0f;
   finalMaxHeightMm = 0.0f;
   finalAucMmSec = 0.0f;
-  finalAverageHeightMm = 0.0f;
 }
 
 void startCalibration() {
@@ -253,6 +362,8 @@ void startCalibration() {
 }
 
 void startMeasurement(uint32_t now) {
+  resetAutoShutdownTimer(now);
+
   startTimeMs = now;
   lastAucUpdateMs = now;
   stopZoneSinceMs = 0;
@@ -275,16 +386,11 @@ void finishMeasurement(uint32_t now) {
   finalMaxHeightMm = maxHeightMm;
   finalAucMmSec = aucMmSec;
 
-  if (finalDurationSec > 0.0f) {
-    finalAverageHeightMm = finalAucMmSec / finalDurationSec;
-  } else {
-    finalAverageHeightMm = 0.0f;
-  }
-
   stopBeepNow();
   confirmSequenceActive = false;
 
   state = FINISHED;
+  resetAutoShutdownTimer(now);
 }
 
 bool readTofDistanceMm(float &distanceMmOut) {
@@ -329,6 +435,7 @@ void processNewDistance(float rawDistanceMm, uint32_t now) {
 
       currentHeightMm = currentDistanceMm - zeroDistanceMm;
       state = WAIT_FOR_LIFT;
+      resetAutoShutdownTimer(now);
 
       startConfirmBeeps();
     }
@@ -390,7 +497,8 @@ void beginScreen() {
   displayY = DISPLAY_MARGIN_Y;
 }
 
-void drawLine(const String &text, uint16_t color = WHITE, uint8_t size = 2) {
+void drawLine(const String &text, uint16_t color = WHITE,
+              uint8_t size = 2) {
   M5.Lcd.setTextColor(color, BLACK);
   M5.Lcd.setTextSize(size);
   M5.Lcd.setCursor(DISPLAY_MARGIN_X, displayY);
@@ -418,10 +526,34 @@ String valueLine(const char *label, float value, const char *unit,
   return line;
 }
 
+String batteryStatusText() {
+  if (!hasBatteryInfo) {
+    return "Akku: --";
+  }
+
+  return "Akku: " + String(batteryPercent) + "%";
+}
+
+String autoOffStatusText(uint32_t now) {
+  if (!isAutoShutdownArmed()) {
+    return "Aus: pause";
+  }
+
+  uint32_t remainingSec = (getAutoShutdownRemainingMs(now) + 999) / 1000;
+  return "Aus: " + String(remainingSec) + "s";
+}
+
+void drawStatusLine() {
+  uint32_t now = millis();
+  updateBatteryStatus();
+  drawLine(batteryStatusText() + "  " + autoOffStatusText(now), WHITE, 1);
+}
+
 void drawIdleLikeScreen(const char *title) {
   beginScreen();
 
   drawLine(title, WHITE, 2);
+  drawStatusLine();
   drawSpacer(4);
 
   if (hasDistance) {
@@ -450,6 +582,7 @@ void drawCalibrationScreen() {
   beginScreen();
 
   drawLine("NULLUNG", YELLOW, 2);
+  drawStatusLine();
   drawSpacer(4);
 
   drawLine(
@@ -474,6 +607,7 @@ void drawRunningScreen() {
   beginScreen();
 
   drawLine("RUNNING", GREEN, 2);
+  drawStatusLine();
   drawSpacer(4);
 
   drawLine(valueLine("Hoehe", currentHeightMm, "mm", 1));
@@ -486,12 +620,12 @@ void drawFinishedScreen() {
   beginScreen();
 
   drawLine("DONE", CYAN, 2);
+  drawStatusLine();
   drawSpacer(4);
 
   drawLine(valueLine("Dauer", finalDurationSec, "s", 1));
   drawLine(valueLine("Max", finalMaxHeightMm, "mm", 1));
   drawLine(valueLine("AUC", finalAucMmSec, "mm*s", 1));
-  drawLine(valueLine("Mittel", finalAverageHeightMm, "mm", 1));
 
   drawSpacer(4);
   drawLine("Btn A = neue Nullung / Messung", WHITE, 1);
@@ -547,9 +681,12 @@ void setup() {
   }
 
   resetMeasurementData();
+  updateBatteryStatus();
+  resetAutoShutdownTimer(millis());
 
   beginScreen();
   drawLine("ToF Hold Test", WHITE, 2);
+  drawStatusLine();
   drawSpacer(4);
   drawLine("Btn A:", WHITE, 2);
   drawLine("Nullung", WHITE, 2);
@@ -566,6 +703,7 @@ void loop() {
   M5.update();
 
   if (M5.BtnA.wasPressed()) {
+    resetAutoShutdownTimer(now);
     startCalibration();
   }
 
@@ -580,6 +718,7 @@ void loop() {
   }
 
   updateBeeper();
+  updateAutoShutdown(now);
 
   if ((now - lastDisplayUpdateMs) >= DISPLAY_UPDATE_MS) {
     lastDisplayUpdateMs = now;
