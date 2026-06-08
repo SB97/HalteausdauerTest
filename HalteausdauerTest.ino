@@ -14,8 +14,16 @@ const uint32_t STOP_HOLD_MS = 400;
 
 const uint8_t CALIBRATION_SAMPLES = 20;
 
-const uint32_t SENSOR_UPDATE_MS = 40;   // 25 Hz
-const uint32_t DISPLAY_UPDATE_MS = 200; // 5 Hz
+// Sensor nur dort schnell, wo es wichtig ist
+const uint32_t SENSOR_UPDATE_ACTIVE_MS = 40; // Kalibrierung + Messung, 25 Hz
+const uint32_t SENSOR_UPDATE_WAIT_MS = 80;   // Warten auf Lift, 12.5 Hz
+
+// Display langsamer spart Strom
+const uint32_t DISPLAY_UPDATE_ACTIVE_MS = 250; // RUNNING / CALIBRATING
+const uint32_t DISPLAY_UPDATE_IDLE_MS = 1000;  // IDLE / WAIT / DONE
+
+// Akku nicht dauernd per I2C abfragen
+const uint32_t BATTERY_UPDATE_MS = 5000;
 
 const uint32_t BEEP_INTERVAL_MS = 1000;
 const uint32_t BEEP_DURATION_MS = 50;
@@ -26,7 +34,15 @@ const uint32_t CONFIRM_BEEP_GAP_MS = 100;
 const uint16_t RUN_BEEP_FREQ_HZ = 2200;
 const uint16_t CONFIRM_BEEP_FREQ_HZ = 3000;
 
-const uint32_t AUTO_SHUTOFF_MS = 120000;
+// Etwas aggressiver für mehr Akkulaufzeit
+const uint32_t AUTO_SHUTOFF_MS = 60000;
+
+// Display-Helligkeit: M5StickC PLUS meist ca. 7 bis 12
+// 7 = recht dunkel, spart Akku
+const uint8_t LCD_BRIGHTNESS = 12;
+
+// ESP32 niedriger takten
+const uint32_t CPU_FREQ_MHZ = 80;
 
 // Spannungsbasierte Akku-%-Schätzung
 const float BATTERY_EMPTY_V = 3.20f;
@@ -78,6 +94,8 @@ AppState state = IDLE;
 
 VL53L0X tof;
 bool tofOk = false;
+bool tofRunning = false;
+uint32_t currentTofPeriodMs = 0;
 
 uint32_t lastSensorUpdateMs = 0;
 uint32_t lastDisplayUpdateMs = 0;
@@ -173,6 +191,7 @@ float finalAucMmSec = 0.0f;
 uint32_t autoShutdownBaseMs = 0;
 bool hasBatteryInfo = false;
 uint8_t batteryPercent = 0;
+uint32_t lastBatteryUpdateMs = 0;
 
 // ================================================================
 // Nicht-blockierender Buzzer über tone() / noTone()
@@ -263,6 +282,92 @@ void updateBeeper()
 }
 
 // ================================================================
+// ToF-Stromsparlogik
+// ================================================================
+
+uint32_t desiredTofPeriodMs()
+{
+  switch (state)
+  {
+  case CALIBRATING:
+  case RUNNING:
+    return SENSOR_UPDATE_ACTIVE_MS;
+
+  case WAIT_FOR_LIFT:
+    return SENSOR_UPDATE_WAIT_MS;
+
+  case IDLE:
+  case FINISHED:
+  default:
+    return 0;
+  }
+}
+
+void stopTofContinuous()
+{
+  if (!tofOk || !tofRunning)
+  {
+    return;
+  }
+
+  tof.stopContinuous();
+  tofRunning = false;
+  currentTofPeriodMs = 0;
+}
+
+void startTofContinuous(uint32_t periodMs)
+{
+  if (!tofOk)
+  {
+    return;
+  }
+
+  if (tofRunning && currentTofPeriodMs == periodMs)
+  {
+    return;
+  }
+
+  if (tofRunning)
+  {
+    tof.stopContinuous();
+  }
+
+  tof.startContinuous(periodMs);
+  tofRunning = true;
+  currentTofPeriodMs = periodMs;
+  lastSensorUpdateMs = millis();
+}
+
+void updateTofPower()
+{
+  uint32_t desiredPeriodMs = desiredTofPeriodMs();
+
+  if (desiredPeriodMs == 0)
+  {
+    stopTofContinuous();
+    return;
+  }
+
+  startTofContinuous(desiredPeriodMs);
+}
+
+uint32_t desiredDisplayUpdateMs()
+{
+  switch (state)
+  {
+  case CALIBRATING:
+  case RUNNING:
+    return DISPLAY_UPDATE_ACTIVE_MS;
+
+  case IDLE:
+  case WAIT_FOR_LIFT:
+  case FINISHED:
+  default:
+    return DISPLAY_UPDATE_IDLE_MS;
+  }
+}
+
+// ================================================================
 // Hilfsfunktionen
 // ================================================================
 
@@ -346,8 +451,17 @@ uint8_t batteryPercentFromVoltage(float voltageV)
   return (uint8_t)(percent + 0.5f);
 }
 
-void updateBatteryStatus()
+void updateBatteryStatus(bool force = false)
 {
+  uint32_t now = millis();
+
+  if (!force && (now - lastBatteryUpdateMs) < BATTERY_UPDATE_MS)
+  {
+    return;
+  }
+
+  lastBatteryUpdateMs = now;
+
   float voltageV = M5.Axp.GetBatVoltage();
 
   if (voltageV > 3.0f && voltageV < 5.0f)
@@ -375,6 +489,7 @@ void updateAutoShutdown(uint32_t now)
   }
 
   stopBeepNow();
+  stopTofContinuous();
 
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextColor(YELLOW, BLACK);
@@ -453,7 +568,7 @@ void finishMeasurement(uint32_t now)
 
 bool readTofDistanceMm(float &distanceMmOut)
 {
-  if (!tofOk)
+  if (!tofOk || !tofRunning)
   {
     return false;
   }
@@ -585,7 +700,6 @@ void finishScreen()
 
 void drawLine(const String &text, uint16_t color = WHITE, uint8_t size = 2)
 {
-
   displayBuffer.setTextColor(color, BLACK);
   displayBuffer.setTextSize(size);
   displayBuffer.setCursor(DISPLAY_MARGIN_X, displayY);
@@ -783,6 +897,10 @@ void updateDisplay()
 void setup()
 {
   M5.begin();
+
+  setCpuFrequencyMhz(CPU_FREQ_MHZ);
+  M5.Axp.ScreenBreath(LCD_BRIGHTNESS);
+
   M5.Lcd.setRotation(3);
   displayBuffer.setColorDepth(8); // 8 Bit spart RAM und reicht fuer Text/Farben hier vollkommen aus.
   displayBuffer.createSprite(M5.Lcd.width(), M5.Lcd.height());
@@ -803,11 +921,12 @@ void setup()
   if (tofOk)
   {
     tof.setMeasurementTimingBudget(33000);
-    tof.startContinuous(SENSOR_UPDATE_MS);
+    // Sensor wird jetzt nicht mehr dauerhaft gestartet.
+    // Er läuft nur bei Kalibrierung, Warten auf Lift und Messung.
   }
 
   resetMeasurementData();
-  updateBatteryStatus();
+  updateBatteryStatus(true);
   resetAutoShutdownTimer(millis());
 
   beginScreen();
@@ -838,7 +957,11 @@ void loop()
     startCalibration();
   }
 
-  if ((now - lastSensorUpdateMs) >= SENSOR_UPDATE_MS)
+  updateTofPower();
+
+  uint32_t sensorUpdateMs = desiredTofPeriodMs();
+
+  if (sensorUpdateMs > 0 && (now - lastSensorUpdateMs) >= sensorUpdateMs)
   {
     lastSensorUpdateMs = now;
 
@@ -853,7 +976,7 @@ void loop()
   updateBeeper();
   updateAutoShutdown(now);
 
-  if ((now - lastDisplayUpdateMs) >= DISPLAY_UPDATE_MS)
+  if ((now - lastDisplayUpdateMs) >= desiredDisplayUpdateMs())
   {
     lastDisplayUpdateMs = now;
     updateDisplay();
