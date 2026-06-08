@@ -46,6 +46,9 @@ const int16_t DISPLAY_MARGIN_X = 8;
 const int16_t DISPLAY_MARGIN_Y = 6;
 const int16_t DISPLAY_LINE_SPACING = 2;
 
+// Offscreen-Framebuffer gegen Display-Flackern
+TFT_eSprite displayBuffer = TFT_eSprite(&M5.Lcd);
+
 // Typischer I2C-Anschluss des M5StickC PLUS HAT-Ports
 const int I2C_SDA_PIN = 0;
 const int I2C_SCL_PIN = 26;
@@ -58,7 +61,8 @@ const uint16_t MAX_VALID_DISTANCE_MM = 2000;
 // Zustandsmaschine
 // ================================================================
 
-enum AppState {
+enum AppState
+{
   IDLE,
   CALIBRATING,
   WAIT_FOR_LIFT,
@@ -93,28 +97,35 @@ float smoothBuffer[SMOOTHING_WINDOW];
 uint8_t smoothCount = 0;
 uint8_t smoothIndex = 0;
 
-void resetSmoothing() {
+void resetSmoothing()
+{
   smoothCount = 0;
   smoothIndex = 0;
 }
 
-float medianFilter(float value) {
+float medianFilter(float value)
+{
   smoothBuffer[smoothIndex] = value;
   smoothIndex = (smoothIndex + 1) % SMOOTHING_WINDOW;
 
-  if (smoothCount < SMOOTHING_WINDOW) {
+  if (smoothCount < SMOOTHING_WINDOW)
+  {
     smoothCount++;
   }
 
   float values[SMOOTHING_WINDOW];
 
-  for (uint8_t i = 0; i < smoothCount; i++) {
+  for (uint8_t i = 0; i < smoothCount; i++)
+  {
     values[i] = smoothBuffer[i];
   }
 
-  for (uint8_t i = 0; i < smoothCount; i++) {
-    for (uint8_t j = i + 1; j < smoothCount; j++) {
-      if (values[j] < values[i]) {
+  for (uint8_t i = 0; i < smoothCount; i++)
+  {
+    for (uint8_t j = i + 1; j < smoothCount; j++)
+    {
+      if (values[j] < values[i])
+      {
         float tmp = values[i];
         values[i] = values[j];
         values[j] = tmp;
@@ -122,7 +133,8 @@ float medianFilter(float value) {
     }
   }
 
-  if (smoothCount % 2 == 1) {
+  if (smoothCount % 2 == 1)
+  {
     return values[smoothCount / 2];
   }
 
@@ -175,8 +187,10 @@ uint32_t confirmNextStartMs = 0;
 
 uint32_t lastRunBeepMs = 0;
 
-void stopBeepNow() {
-  if (BUZZER_ENABLED) {
+void stopBeepNow()
+{
+  if (BUZZER_ENABLED)
+  {
     noTone(BUZZER_PIN);
     digitalWrite(BUZZER_PIN, LOW);
   }
@@ -184,8 +198,10 @@ void stopBeepNow() {
   beepOn = false;
 }
 
-void startSingleBeep(uint16_t freqHz, uint32_t durationMs) {
-  if (!BUZZER_ENABLED) {
+void startSingleBeep(uint16_t freqHz, uint32_t durationMs)
+{
+  if (!BUZZER_ENABLED)
+  {
     return;
   }
 
@@ -194,7 +210,8 @@ void startSingleBeep(uint16_t freqHz, uint32_t durationMs) {
   beepOffAtMs = millis() + durationMs;
 }
 
-void startConfirmBeeps() {
+void startConfirmBeeps()
+{
   stopBeepNow();
 
   confirmSequenceActive = true;
@@ -202,14 +219,18 @@ void startConfirmBeeps() {
   confirmNextStartMs = millis();
 }
 
-void updateBeeper() {
+void updateBeeper()
+{
   uint32_t now = millis();
 
-  if (beepOn && (int32_t)(now - beepOffAtMs) >= 0) {
+  if (beepOn && (int32_t)(now - beepOffAtMs) >= 0)
+  {
     stopBeepNow();
 
-    if (confirmSequenceActive) {
-      if (confirmBeepsLeft > 0) {
+    if (confirmSequenceActive)
+    {
+      if (confirmBeepsLeft > 0)
+      {
         confirmBeepsLeft--;
       }
 
@@ -217,18 +238,24 @@ void updateBeeper() {
     }
   }
 
-  if (confirmSequenceActive && !beepOn) {
-    if (confirmBeepsLeft == 0) {
+  if (confirmSequenceActive && !beepOn)
+  {
+    if (confirmBeepsLeft == 0)
+    {
       confirmSequenceActive = false;
-    } else if ((int32_t)(now - confirmNextStartMs) >= 0) {
+    }
+    else if ((int32_t)(now - confirmNextStartMs) >= 0)
+    {
       startSingleBeep(CONFIRM_BEEP_FREQ_HZ, CONFIRM_BEEP_DURATION_MS);
     }
 
     return;
   }
 
-  if (state == RUNNING && !beepOn) {
-    if ((int32_t)(now - lastRunBeepMs) >= (int32_t)BEEP_INTERVAL_MS) {
+  if (state == RUNNING && !beepOn)
+  {
+    if ((int32_t)(now - lastRunBeepMs) >= (int32_t)BEEP_INTERVAL_MS)
+    {
       lastRunBeepMs = now;
       startSingleBeep(RUN_BEEP_FREQ_HZ, BEEP_DURATION_MS);
     }
@@ -239,85 +266,111 @@ void updateBeeper() {
 // Hilfsfunktionen
 // ================================================================
 
-void resetAutoShutdownTimer(uint32_t now) {
+void resetAutoShutdownTimer(uint32_t now)
+{
   autoShutdownBaseMs = now;
 }
 
-bool isAutoShutdownArmed() {
+bool isAutoShutdownArmed()
+{
   return state == IDLE || state == WAIT_FOR_LIFT || state == FINISHED;
 }
 
-uint32_t getAutoShutdownRemainingMs(uint32_t now) {
-  if (!isAutoShutdownArmed()) {
+uint32_t getAutoShutdownRemainingMs(uint32_t now)
+{
+  if (!isAutoShutdownArmed())
+  {
     return AUTO_SHUTOFF_MS;
   }
 
   uint32_t elapsed = now - autoShutdownBaseMs;
 
-  if (elapsed >= AUTO_SHUTOFF_MS) {
+  if (elapsed >= AUTO_SHUTOFF_MS)
+  {
     return 0;
   }
 
   return AUTO_SHUTOFF_MS - elapsed;
 }
 
-uint8_t batteryPercentFromVoltage(float voltageV) {
+uint8_t batteryPercentFromVoltage(float voltageV)
+{
   float percent = 0.0f;
 
-  if (voltageV >= BATTERY_FULL_V) {
+  if (voltageV >= BATTERY_FULL_V)
+  {
     percent = 100.0f;
-  } else if (voltageV >= BATTERY_HIGH_V) {
+  }
+  else if (voltageV >= BATTERY_HIGH_V)
+  {
     percent = 80.0f +
               ((voltageV - BATTERY_HIGH_V) /
                (BATTERY_FULL_V - BATTERY_HIGH_V)) *
                   20.0f;
-  } else if (voltageV >= BATTERY_MID_V) {
+  }
+  else if (voltageV >= BATTERY_MID_V)
+  {
     percent = 40.0f +
               ((voltageV - BATTERY_MID_V) /
                (BATTERY_HIGH_V - BATTERY_MID_V)) *
                   40.0f;
-  } else if (voltageV >= BATTERY_LOW_V) {
+  }
+  else if (voltageV >= BATTERY_LOW_V)
+  {
     percent = 10.0f +
               ((voltageV - BATTERY_LOW_V) /
                (BATTERY_MID_V - BATTERY_LOW_V)) *
                   30.0f;
-  } else if (voltageV >= BATTERY_EMPTY_V) {
+  }
+  else if (voltageV >= BATTERY_EMPTY_V)
+  {
     percent = ((voltageV - BATTERY_EMPTY_V) /
                (BATTERY_LOW_V - BATTERY_EMPTY_V)) *
               10.0f;
-  } else {
+  }
+  else
+  {
     percent = 0.0f;
   }
 
-  if (percent < 0.0f) {
+  if (percent < 0.0f)
+  {
     percent = 0.0f;
   }
 
-  if (percent > 100.0f) {
+  if (percent > 100.0f)
+  {
     percent = 100.0f;
   }
 
   return (uint8_t)(percent + 0.5f);
 }
 
-void updateBatteryStatus() {
+void updateBatteryStatus()
+{
   float voltageV = M5.Axp.GetBatVoltage();
 
-  if (voltageV > 3.0f && voltageV < 5.0f) {
+  if (voltageV > 3.0f && voltageV < 5.0f)
+  {
     hasBatteryInfo = true;
     batteryPercent = batteryPercentFromVoltage(voltageV);
-  } else {
+  }
+  else
+  {
     hasBatteryInfo = false;
     batteryPercent = 0;
   }
 }
 
-void updateAutoShutdown(uint32_t now) {
-  if (!isAutoShutdownArmed()) {
+void updateAutoShutdown(uint32_t now)
+{
+  if (!isAutoShutdownArmed())
+  {
     return;
   }
 
-  if ((now - autoShutdownBaseMs) < AUTO_SHUTOFF_MS) {
+  if ((now - autoShutdownBaseMs) < AUTO_SHUTOFF_MS)
+  {
     return;
   }
 
@@ -333,7 +386,8 @@ void updateAutoShutdown(uint32_t now) {
   M5.Axp.PowerOff();
 }
 
-void resetMeasurementData() {
+void resetMeasurementData()
+{
   startTimeMs = 0;
   endTimeMs = 0;
   lastAucUpdateMs = 0;
@@ -347,7 +401,8 @@ void resetMeasurementData() {
   finalAucMmSec = 0.0f;
 }
 
-void startCalibration() {
+void startCalibration()
+{
   stopBeepNow();
   confirmSequenceActive = false;
 
@@ -361,7 +416,8 @@ void startCalibration() {
   state = CALIBRATING;
 }
 
-void startMeasurement(uint32_t now) {
+void startMeasurement(uint32_t now)
+{
   resetAutoShutdownTimer(now);
 
   startTimeMs = now;
@@ -371,7 +427,8 @@ void startMeasurement(uint32_t now) {
   aucMmSec = 0.0f;
   maxHeightMm = currentHeightMm;
 
-  if (maxHeightMm < 0.0f) {
+  if (maxHeightMm < 0.0f)
+  {
     maxHeightMm = 0.0f;
   }
 
@@ -379,7 +436,8 @@ void startMeasurement(uint32_t now) {
   state = RUNNING;
 }
 
-void finishMeasurement(uint32_t now) {
+void finishMeasurement(uint32_t now)
+{
   endTimeMs = now;
 
   finalDurationSec = (endTimeMs - startTimeMs) / 1000.0f;
@@ -393,19 +451,23 @@ void finishMeasurement(uint32_t now) {
   resetAutoShutdownTimer(now);
 }
 
-bool readTofDistanceMm(float &distanceMmOut) {
-  if (!tofOk) {
+bool readTofDistanceMm(float &distanceMmOut)
+{
+  if (!tofOk)
+  {
     return false;
   }
 
   uint16_t distanceMm = tof.readRangeContinuousMillimeters();
 
-  if (tof.timeoutOccurred()) {
+  if (tof.timeoutOccurred())
+  {
     return false;
   }
 
   if (distanceMm < MIN_VALID_DISTANCE_MM ||
-      distanceMm > MAX_VALID_DISTANCE_MM) {
+      distanceMm > MAX_VALID_DISTANCE_MM)
+  {
     return false;
   }
 
@@ -413,21 +475,27 @@ bool readTofDistanceMm(float &distanceMmOut) {
   return true;
 }
 
-void processNewDistance(float rawDistanceMm, uint32_t now) {
+void processNewDistance(float rawDistanceMm, uint32_t now)
+{
   currentDistanceMm = medianFilter(rawDistanceMm);
   hasDistance = true;
 
-  if (hasZero) {
+  if (hasZero)
+  {
     currentHeightMm = currentDistanceMm - zeroDistanceMm;
-  } else {
+  }
+  else
+  {
     currentHeightMm = 0.0f;
   }
 
-  if (state == CALIBRATING) {
+  if (state == CALIBRATING)
+  {
     calibrationSumMm += currentDistanceMm;
     calibrationCount++;
 
-    if (calibrationCount >= CALIBRATION_SAMPLES) {
+    if (calibrationCount >= CALIBRATION_SAMPLES)
+    {
       zeroDistanceMm = calibrationSumMm / calibrationCount;
       hasZero = true;
 
@@ -443,42 +511,54 @@ void processNewDistance(float rawDistanceMm, uint32_t now) {
     return;
   }
 
-  if (!hasZero) {
+  if (!hasZero)
+  {
     return;
   }
 
-  if (state == WAIT_FOR_LIFT) {
-    if (currentHeightMm >= START_THRESHOLD_MM) {
+  if (state == WAIT_FOR_LIFT)
+  {
+    if (currentHeightMm >= START_THRESHOLD_MM)
+    {
       startMeasurement(now);
     }
 
     return;
   }
 
-  if (state == RUNNING) {
+  if (state == RUNNING)
+  {
     uint32_t dtMs = now - lastAucUpdateMs;
     lastAucUpdateMs = now;
 
     float dtSec = dtMs / 1000.0f;
     float positiveHeightMm = currentHeightMm;
 
-    if (positiveHeightMm < 0.0f) {
+    if (positiveHeightMm < 0.0f)
+    {
       positiveHeightMm = 0.0f;
     }
 
     aucMmSec += positiveHeightMm * dtSec;
 
-    if (currentHeightMm > maxHeightMm) {
+    if (currentHeightMm > maxHeightMm)
+    {
       maxHeightMm = currentHeightMm;
     }
 
-    if (currentHeightMm <= STOP_THRESHOLD_MM) {
-      if (stopZoneSinceMs == 0) {
+    if (currentHeightMm <= STOP_THRESHOLD_MM)
+    {
+      if (stopZoneSinceMs == 0)
+      {
         stopZoneSinceMs = now;
-      } else if ((now - stopZoneSinceMs) >= STOP_HOLD_MS) {
+      }
+      else if ((now - stopZoneSinceMs) >= STOP_HOLD_MS)
+      {
         finishMeasurement(now);
       }
-    } else {
+    }
+    else
+    {
       stopZoneSinceMs = 0;
     }
 
@@ -492,32 +572,44 @@ void processNewDistance(float rawDistanceMm, uint32_t now) {
 
 int16_t displayY = DISPLAY_MARGIN_Y;
 
-void beginScreen() {
-  M5.Lcd.fillScreen(BLACK);
+void beginScreen()
+{
+  displayBuffer.fillSprite(BLACK);
   displayY = DISPLAY_MARGIN_Y;
 }
 
-void drawLine(const String &text, uint16_t color = WHITE,
-              uint8_t size = 2) {
-  M5.Lcd.setTextColor(color, BLACK);
-  M5.Lcd.setTextSize(size);
-  M5.Lcd.setCursor(DISPLAY_MARGIN_X, displayY);
-  M5.Lcd.print(text);
+void finishScreen()
+{
+  displayBuffer.pushSprite(0, 0);
+}
+
+void drawLine(const String &text, uint16_t color = WHITE, uint8_t size = 2)
+{
+
+  displayBuffer.setTextColor(color, BLACK);
+  displayBuffer.setTextSize(size);
+  displayBuffer.setCursor(DISPLAY_MARGIN_X, displayY);
+  displayBuffer.print(text);
 
   displayY += (8 * size) + DISPLAY_LINE_SPACING;
 }
 
-void drawSpacer(uint8_t pixels = 6) {
+void drawSpacer(uint8_t pixels = 6)
+{
   displayY += pixels;
 }
 
 String valueLine(const char *label, float value, const char *unit,
-                 unsigned int decimals) {
+                 unsigned int decimals)
+{
   String line = String(label) + ": ";
 
-  if (isnan(value)) {
+  if (isnan(value))
+  {
     line += "--";
-  } else {
+  }
+  else
+  {
     line += String(value, decimals);
     line += " ";
     line += unit;
@@ -526,16 +618,20 @@ String valueLine(const char *label, float value, const char *unit,
   return line;
 }
 
-String batteryStatusText() {
-  if (!hasBatteryInfo) {
+String batteryStatusText()
+{
+  if (!hasBatteryInfo)
+  {
     return "Akku: --";
   }
 
   return "Akku: " + String(batteryPercent) + "%";
 }
 
-String autoOffStatusText(uint32_t now) {
-  if (!isAutoShutdownArmed()) {
+String autoOffStatusText(uint32_t now)
+{
+  if (!isAutoShutdownArmed())
+  {
     return "Aus: pause";
   }
 
@@ -543,29 +639,37 @@ String autoOffStatusText(uint32_t now) {
   return "Aus: " + String(remainingSec) + "s";
 }
 
-void drawStatusLine() {
+void drawStatusLine()
+{
   uint32_t now = millis();
   updateBatteryStatus();
   drawLine(batteryStatusText() + "  " + autoOffStatusText(now), WHITE, 1);
 }
 
-void drawIdleLikeScreen(const char *title) {
+void drawIdleLikeScreen(const char *title)
+{
   beginScreen();
 
   drawLine(title, WHITE, 2);
   drawStatusLine();
   drawSpacer(4);
 
-  if (hasDistance) {
+  if (hasDistance)
+  {
     drawLine(valueLine("Distanz", currentDistanceMm, "mm", 0));
-  } else {
+  }
+  else
+  {
     drawLine(valueLine("Distanz", NAN, "mm", 0));
   }
 
-  if (hasZero) {
+  if (hasZero)
+  {
     drawLine(valueLine("Null", zeroDistanceMm, "mm", 0));
     drawLine(valueLine("Hoehe", currentHeightMm, "mm", 1));
-  } else {
+  }
+  else
+  {
     drawLine(valueLine("Null", NAN, "mm", 0));
     drawLine(valueLine("Hoehe", NAN, "mm", 1));
   }
@@ -573,12 +677,16 @@ void drawIdleLikeScreen(const char *title) {
   drawSpacer(4);
   drawLine("Btn A = Nullung / neue Messung", WHITE, 1);
 
-  if (!tofOk) {
+  if (!tofOk)
+  {
     drawLine("ToF Sensor nicht gefunden!", RED, 1);
   }
+
+  finishScreen();
 }
 
-void drawCalibrationScreen() {
+void drawCalibrationScreen()
+{
   beginScreen();
 
   drawLine("NULLUNG", YELLOW, 2);
@@ -590,17 +698,23 @@ void drawCalibrationScreen() {
           String(CALIBRATION_SAMPLES),
       WHITE, 2);
 
-  if (hasDistance) {
+  if (hasDistance)
+  {
     drawLine(valueLine("Distanz", currentDistanceMm, "mm", 0));
-  } else {
+  }
+  else
+  {
     drawLine(valueLine("Distanz", NAN, "mm", 0));
   }
 
   drawSpacer(4);
   drawLine("Gewicht ruhig halten", WHITE, 1);
+
+  finishScreen();
 }
 
-void drawRunningScreen() {
+void drawRunningScreen()
+{
   uint32_t now = millis();
   float durationSec = (now - startTimeMs) / 1000.0f;
 
@@ -614,9 +728,12 @@ void drawRunningScreen() {
   drawLine(valueLine("Max", maxHeightMm, "mm", 1));
   drawLine(valueLine("Zeit", durationSec, "s", 1));
   drawLine(valueLine("AUC", aucMmSec, "mm*s", 1));
+
+  finishScreen();
 }
 
-void drawFinishedScreen() {
+void drawFinishedScreen()
+{
   beginScreen();
 
   drawLine("DONE", CYAN, 2);
@@ -629,29 +746,33 @@ void drawFinishedScreen() {
 
   drawSpacer(4);
   drawLine("Btn A = neue Nullung / Messung", WHITE, 1);
+
+  finishScreen();
 }
 
-void updateDisplay() {
-  switch (state) {
-    case IDLE:
-      drawIdleLikeScreen("IDLE");
-      break;
+void updateDisplay()
+{
+  switch (state)
+  {
+  case IDLE:
+    drawIdleLikeScreen("IDLE");
+    break;
 
-    case CALIBRATING:
-      drawCalibrationScreen();
-      break;
+  case CALIBRATING:
+    drawCalibrationScreen();
+    break;
 
-    case WAIT_FOR_LIFT:
-      drawIdleLikeScreen("WAIT LIFT");
-      break;
+  case WAIT_FOR_LIFT:
+    drawIdleLikeScreen("WAIT LIFT");
+    break;
 
-    case RUNNING:
-      drawRunningScreen();
-      break;
+  case RUNNING:
+    drawRunningScreen();
+    break;
 
-    case FINISHED:
-      drawFinishedScreen();
-      break;
+  case FINISHED:
+    drawFinishedScreen();
+    break;
   }
 }
 
@@ -659,9 +780,13 @@ void updateDisplay() {
 // Arduino setup / loop
 // ================================================================
 
-void setup() {
+void setup()
+{
   M5.begin();
   M5.Lcd.setRotation(3);
+  displayBuffer.setColorDepth(8); // 8 Bit spart RAM und reicht fuer Text/Farben hier vollkommen aus.
+  displayBuffer.createSprite(M5.Lcd.width(), M5.Lcd.height());
+  displayBuffer.setTextWrap(false);
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setTextSize(2);
@@ -675,7 +800,8 @@ void setup() {
   tof.setTimeout(50);
   tofOk = tof.init();
 
-  if (tofOk) {
+  if (tofOk)
+  {
     tof.setMeasurementTimingBudget(33000);
     tof.startContinuous(SENSOR_UPDATE_MS);
   }
@@ -691,28 +817,35 @@ void setup() {
   drawLine("Btn A:", WHITE, 2);
   drawLine("Nullung", WHITE, 2);
 
-  if (!tofOk) {
+  if (!tofOk)
+  {
     drawSpacer(4);
     drawLine("ToF Sensor nicht gefunden!", RED, 1);
   }
+
+  finishScreen();
 }
 
-void loop() {
+void loop()
+{
   uint32_t now = millis();
 
   M5.update();
 
-  if (M5.BtnA.wasPressed()) {
+  if (M5.BtnA.wasPressed())
+  {
     resetAutoShutdownTimer(now);
     startCalibration();
   }
 
-  if ((now - lastSensorUpdateMs) >= SENSOR_UPDATE_MS) {
+  if ((now - lastSensorUpdateMs) >= SENSOR_UPDATE_MS)
+  {
     lastSensorUpdateMs = now;
 
     float rawDistanceMm = 0.0f;
 
-    if (readTofDistanceMm(rawDistanceMm)) {
+    if (readTofDistanceMm(rawDistanceMm))
+    {
       processNewDistance(rawDistanceMm, now);
     }
   }
@@ -720,7 +853,8 @@ void loop() {
   updateBeeper();
   updateAutoShutdown(now);
 
-  if ((now - lastDisplayUpdateMs) >= DISPLAY_UPDATE_MS) {
+  if ((now - lastDisplayUpdateMs) >= DISPLAY_UPDATE_MS)
+  {
     lastDisplayUpdateMs = now;
     updateDisplay();
   }
