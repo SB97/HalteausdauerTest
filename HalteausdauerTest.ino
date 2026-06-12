@@ -35,11 +35,11 @@ const uint16_t RUN_BEEP_FREQ_HZ = 2200;
 const uint16_t CONFIRM_BEEP_FREQ_HZ = 3000;
 
 // Etwas aggressiver für mehr Akkulaufzeit
-const uint32_t AUTO_SHUTOFF_MS = 60000;
+const uint32_t AUTO_SHUTOFF_MS = 90000;
 
 // Display-Helligkeit: M5StickC PLUS meist ca. 7 bis 12
 // 7 = recht dunkel, spart Akku
-const uint8_t LCD_BRIGHTNESS = 12;
+const uint8_t LCD_BRIGHTNESS = 15;
 
 // ESP32 niedriger takten
 const uint32_t CPU_FREQ_MHZ = 80;
